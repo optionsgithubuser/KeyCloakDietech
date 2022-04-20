@@ -1,0 +1,132 @@
+# This workflow will add Keycloak as docker container to Azure App Service and configure the container
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  AZURE_WEBAPP_NAME: dietechkeycloak # set this to your application's name
+  RESOURCE_GROUP: "rg_AS_DietechKeyCloak" # set this to your resource group
+  ACCOUNT_NAME: "storagedietechkeycloak" # set this to your Azure storage account name
+
+jobs:
+  configure:
+    runs-on: ubuntu-latest
+
+    environment:
+      name: "Keycloak"
+      url: ${{ steps.deploy-to-webapp.outputs.webapp-url }}
+
+    steps:
+
+      # get the source files
+      - uses: actions/checkout@v2
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
+
+      - name: Login to Azure Container Registry
+        uses: docker/login-action@v1
+        with:
+          registry: ${{ secrets.REGISTRY_LOGIN_SERVER }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v2
+        with:
+          push: true
+          tags: ${{ secrets.REGISTRY_LOGIN_SERVER }}/keycloak:latest
+          build-args: |
+            KC_DB_URL_HOST=${{ secrets.DB_HOST }}
+            KC_DB_PASSWORD=${{ secrets.DB_PASSWORD }}
+            KC_DB_USERNAME=${{ secrets.DB_USER }}
+
+      # set the container image on azure webapp
+      - name: Set Container on Azure WebApp
+        id: deploy-to-webapp
+        uses: azure/webapps-deploy@v2
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          publish-profile: ${{ secrets.PUBLISH_PROFILE_PRODUCTION }}
+          images: ${{ secrets.REGISTRY_LOGIN_SERVER }}/keycloak:latest
+
+      # login with an azure service principal
+      # created with: az ad sp create-for-rbac --name Keycloak2 --role contributor --scopes /subscriptions/219ed260-8593-4c06-8304-49b26e912f63/resourceGroups/govradar-resource-group/providers/Microsoft.Web/sites/govradar-keycloak --sdk-auth
+      - uses: azure/login@v1
+        with:
+          creds: "${{ secrets.SERVICE_PRINCIPAL }}"
+
+      # set the keycloak environment variables, see https://hub.docker.com/r/jboss/keycloak/
+      - name: Set Container Settings
+        uses: Azure/appservice-settings@v1
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          app-settings-json: |
+            [
+
+                {
+                    "name": "DOCKER_REGISTRY_SERVER_URL",
+                    "value": "${{ secrets.REGISTRY_LOGIN_SERVER }}",
+                    "slotSetting": false
+                },
+                {
+                    "name": "DOCKER_REGISTRY_SERVER_USERNAME",
+                    "value": "${{ secrets.REGISTRY_USERNAME }}",
+                    "slotSetting": false
+                },
+                {
+                    "name": "DOCKER_REGISTRY_SERVER_PASSWORD",
+                    "value": "${{ secrets.REGISTRY_PASSWORD }}",
+                    "slotSetting": false
+                },
+                {
+                    "name": "KEYCLOAK_USER",
+                    "value": "${{ secrets.KEYCLOAK_USER }}",
+                    "slotSetting": false
+                },
+                {
+                    "name": "KEYCLOAK_PASSWORD",
+                    "value": "${{ secrets.KEYCLOAK_PASSWORD }}",
+                    "slotSetting": false
+                },
+                {
+                    "name": "DB_VENDOR",
+                    "value": "postgres",
+                    "slotSetting": false
+                },
+                {
+                  "name": "KC_PROXY",
+                  "value": "edge",
+                  "slotSetting": false
+                },
+                {
+                  "name": "PROXY_ADDRESS_FORWARDING",
+                  "value": "true",
+                  "slotSetting": false
+                },
+                {
+                  "name": "KEYCLOAK_DEFAULT_THEME",
+                  "value": "govradar_theme",
+                  "slotSetting": false
+                }
+            ]
+
+      # mount the theme folder to the container so the theme is available
+      #- name: "Mount theme folder"
+      #  run: az webapp config storage-account update --resource-group ${{ env.RESOURCE_GROUP }} --name ${{ env.AZURE_WEBAPP_NAME }} --custom-id CustomId  --storage-type AzureBlob --share-name keycloak-theme --account-name ${{ env.ACCOUNT_NAME }} --access-key ${{ secrets.STORAGE_ACCESS_KEY }} --mount-path /opt/jboss/keycloak/themes/govradar
+
+      # get the source files
+      #- uses: actions/checkout@v2
+
+      # upload them to blob storage
+      #- uses: bacongobbler/azure-blob-storage-upload@v1.2.0
+      #  with:
+      #    source_dir: govradar_theme
+      #    container_name: keycloak-theme
+      #    connection_string: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
+      #    sync: true
